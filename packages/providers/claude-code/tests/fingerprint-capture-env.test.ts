@@ -33,11 +33,15 @@ describe("fingerprint capture environment", () => {
     "utf8",
   );
 
+  // The full set Claude Code 2.1.247 checks in its alternate-backend branch.
   const alternateBackendVars = [
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_GATEWAY",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
+    "CLAUDE_CODE_USE_MANTLE",
   ];
 
   it("strips every alternate-backend switch from the capture child env", () => {
