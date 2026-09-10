@@ -479,12 +479,27 @@ async function runClaudeCapture(params: {
     args.push("--model", params.model);
   }
 
+  // The capture call must reach the local capture server, never a real
+  // provider. ANTHROPIC_BASE_URL only redirects Claude Code's direct
+  // Anthropic API path: in Bedrock/Vertex/Foundry/gateway mode it is ignored,
+  // so an inherited CLAUDE_CODE_USE_BEDROCK=1 (etc.) sends this throwaway
+  // "hi" to the real backend and bills the user for every capture.
+  const captureEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ANTHROPIC_BASE_URL: params.baseUrl,
+  };
+  for (const alternateBackendVar of [
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_GATEWAY",
+  ]) {
+    delete captureEnv[alternateBackendVar];
+  }
+
   await new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, {
-      env: {
-        ...process.env,
-        ANTHROPIC_BASE_URL: params.baseUrl,
-      },
+      env: captureEnv,
       stdio: "ignore",
     });
 
