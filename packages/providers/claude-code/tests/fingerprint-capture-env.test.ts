@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
+import { mkdir, readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
+import { captureLiveTemplateAsync } from "../src/fingerprint-capture";
+import {
+  CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS,
+  createClaudeCaptureEnv,
+  createClaudeCaptureSettings,
+  createClaudeCaptureSpawn,
+  hasClaudeEndpointManagedSettings,
+} from "../src/capture-environment";
 
 /**
  * Regression guard for the fingerprint capture environment.
@@ -19,10 +29,9 @@ import { describe, expect, it } from "vitest";
  * captures over four days cost 9.79 USD, almost all of it prompt-cache writes,
  * because each capture is a fresh session.
  *
- * runClaudeCapture is module-private and spawns a real process, so this test
- * asserts on the source: the child environment must strip the alternate
- * backend switches. Kept as a source assertion rather than exporting internals
- * purely for testing.
+ * The regression exercises the real capture subprocess with a fake Claude
+ * executable, so settings-file precedence and inherited environment handling
+ * are checked together without contacting an upstream provider.
  */
 describe("fingerprint capture environment", () => {
   const source = readFileSync(
@@ -32,33 +41,216 @@ describe("fingerprint capture environment", () => {
     ),
     "utf8",
   );
-
-  // The full set Claude Code 2.1.247 checks in its alternate-backend branch.
-  const alternateBackendVars = [
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-    "CLAUDE_CODE_USE_GATEWAY",
-    "CLAUDE_CODE_USE_ANTHROPIC_AWS",
-    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD",
-    "CLAUDE_CODE_USE_MANTLE",
-  ];
+  const environmentSource = readFileSync(
+    join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../src/capture-environment.ts",
+    ),
+    "utf8",
+  );
 
   it("strips every alternate-backend switch from the capture child env", () => {
-    for (const variable of alternateBackendVars) {
+    const parentEnv = Object.fromEntries(
+      CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS.map((variable) => [variable, "1"]),
+    );
+    parentEnv["unrelated"] = "preserved";
+    const childEnv = createClaudeCaptureEnv("http://127.0.0.1:1234/capture", parentEnv);
+
+    for (const variable of CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS) {
       expect(
-        source.includes(`"${variable}"`),
+        childEnv[variable],
         `${variable} must be removed from the capture environment`,
-      ).toBe(true);
+      ).toBeUndefined();
+    }
+    expect(childEnv.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:1234/capture");
+    expect(childEnv["unrelated"]).toBe("preserved");
+    expect(parentEnv.CLAUDE_CODE_USE_BEDROCK).toBe("1");
+  });
+
+  it("overrides settings-file routing at Claude Code CLI precedence", () => {
+    const settings = JSON.parse(createClaudeCaptureSettings("http://127.0.0.1:1234/capture")) as {
+      env: Record<string, string>;
+    };
+
+    expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:1234/capture");
+    for (const variable of CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS) {
+      expect(settings.env[variable], `${variable} must be explicitly disabled`).toBe("");
     }
   });
 
-  it("still redirects the capture at the local server", () => {
-    expect(source).toContain("ANTHROPIC_BASE_URL: params.baseUrl");
+  it("uses a quoted cmd.exe command instead of shell argument concatenation", () => {
+    const invocation = createClaudeCaptureSpawn(
+      "C:\\Users\\Name With Space\\claude.cmd",
+      "C:\\Users\\Name With Space\\claude.cmd",
+      ["--print", "-p", "hi", "--settings", "C:\\Temp\\settings.json"],
+      {
+        platform: "win32",
+        comSpec: "C:\\Windows\\System32\\cmd.exe",
+      },
+    );
+
+    expect(invocation).toEqual({
+      command: "C:\\Windows\\System32\\cmd.exe",
+      args: [
+        "/d",
+        "/s",
+        "/c",
+        '""C:\\Users\\Name With Space\\claude.cmd" "--print" "-p" "hi" "--settings" "C:\\Temp\\settings.json""',
+      ],
+      windowsVerbatimArguments: true,
+    });
+    const metacharInvocation = createClaudeCaptureSpawn(
+      "C:\\Users\\Name&Other\\claude.cmd",
+      "C:\\Users\\Name&Other\\claude.cmd",
+      [],
+      { platform: "win32" },
+    );
+    expect(metacharInvocation.args[3]).toContain('"C:\\Users\\Name&Other\\claude.cmd"');
+    expect(() => createClaudeCaptureSpawn(
+      "C:\\Users\\Name%Other\\claude.cmd",
+      "C:\\Users\\Name%Other\\claude.cmd",
+      [],
+      { platform: "win32" },
+    )).toThrow(/unsupported Windows shell characters/);
   });
 
-  it("deletes the switches instead of mutating the caller's environment", () => {
-    expect(source).toContain("delete captureEnv[alternateBackendVar]");
+  it("keeps the capture paths on the shared environment boundary", () => {
+    expect(source).toContain("createClaudeCaptureEnv");
+    expect(source).toContain("withClaudeCaptureSettings");
+    expect(source).toContain("createClaudeCaptureSpawn");
+    expect(environmentSource).toContain("delete captureEnv[variable]");
     expect(source).not.toContain("delete process.env.CLAUDE_CODE_USE_BEDROCK");
+  });
+
+  it("fails closed when endpoint-managed settings can override capture routing", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "kyoli-claude-managed-settings-"));
+    const dropInDir = join(tempDir, "managed-settings.d");
+    const commandCalls: Array<{ command: string; args: string[] }> = [];
+    const commandProbe = (command: string, args: string[]): boolean => {
+      commandCalls.push({ command, args });
+      return true;
+    };
+
+    try {
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "linux",
+        managedSettingsDir: tempDir,
+      })).toBe(false);
+
+      await writeFile(join(tempDir, "managed-settings.json"), "{}", "utf8");
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "linux",
+        managedSettingsDir: tempDir,
+      })).toBe(true);
+      await rm(join(tempDir, "managed-settings.json"));
+
+      await mkdir(dropInDir);
+      await writeFile(join(dropInDir, ".ignored.json"), "{}", "utf8");
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "linux",
+        managedSettingsDir: tempDir,
+      })).toBe(false);
+      await writeFile(join(dropInDir, "10-policy.json"), "{}", "utf8");
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "linux",
+        managedSettingsDir: tempDir,
+      })).toBe(true);
+
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "darwin",
+        managedSettingsDir: join(tempDir, "missing"),
+        commandProbe,
+      })).toBe(true);
+      expect(commandCalls).toEqual([{
+        command: "/usr/bin/defaults",
+        args: ["read", "com.anthropic.claudecode"],
+      }]);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("wins over alternate-backend settings when spawning the fingerprint CLI", async () => {
+    const alternateBackendVars = [...CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS];
+    const previousEnv = Object.fromEntries([
+      ["KYOLI_CLAUDE_CODE_PATH", process.env.KYOLI_CLAUDE_CODE_PATH],
+      ["CLAUDE_CONFIG_DIR", process.env.CLAUDE_CONFIG_DIR],
+      ["ANTHROPIC_BASE_URL", process.env.ANTHROPIC_BASE_URL],
+      ["CAPTURE_ENV_PROBE_LOG", process.env.CAPTURE_ENV_PROBE_LOG],
+      ...alternateBackendVars.map((variable) => [variable, process.env[variable]]),
+    ]);
+    const tempDir = await mkdtemp(join(tmpdir(), "kyoli-claude-capture-env-"));
+    const configDir = join(tempDir, "config");
+    const fakeClaudePath = join(tempDir, "claude.mjs");
+    const probePath = join(tempDir, "probe.json");
+
+    await mkdir(configDir);
+    await writeFile(
+      join(configDir, "settings.json"),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "https://settings.invalid",
+          ...Object.fromEntries(alternateBackendVars.map((variable) => [variable, "1"])),
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      fakeClaudePath,
+      `
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const variables = ${JSON.stringify(alternateBackendVars)};
+const settings = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, "settings.json"), "utf8"));
+const settingsIndex = process.argv.indexOf("--settings");
+const cliSettings = settingsIndex >= 0
+  ? JSON.parse(readFileSync(process.argv[settingsIndex + 1], "utf8"))
+  : {};
+const effectiveEnv = { ...(settings.env ?? {}), ...(cliSettings.env ?? {}) };
+const safe = variables.every((variable) => !effectiveEnv[variable])
+  && effectiveEnv.ANTHROPIC_BASE_URL === process.env.ANTHROPIC_BASE_URL
+  && process.env.ANTHROPIC_BASE_URL.startsWith("http://127.0.0.1:");
+writeFileSync(process.env.CAPTURE_ENV_PROBE_LOG, JSON.stringify({
+  safe,
+  effectiveEnv,
+  inheritedSelectors: Object.fromEntries(variables.map((variable) => [variable, process.env[variable]])),
+}));
+process.exit(safe ? 0 : 9);
+`,
+      "utf8",
+    );
+
+    process.env.KYOLI_CLAUDE_CODE_PATH = fakeClaudePath;
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    process.env.ANTHROPIC_BASE_URL = "https://parent.invalid";
+    process.env.CAPTURE_ENV_PROBE_LOG = probePath;
+    for (const variable of alternateBackendVars) {
+      process.env[variable] = "1";
+    }
+
+    try {
+      expect(await captureLiveTemplateAsync(2_000)).toBeNull();
+      const probe = JSON.parse(await readFile(probePath, "utf8")) as {
+        safe: boolean;
+        effectiveEnv: Record<string, string>;
+        inheritedSelectors: Record<string, string | undefined>;
+      };
+      expect(probe.safe).toBe(true);
+      expect(probe.effectiveEnv.ANTHROPIC_BASE_URL).toMatch(/^http:\/\/127\.0\.0\.1:/);
+      for (const variable of alternateBackendVars) {
+        expect(probe.effectiveEnv[variable]).toBe("");
+        expect(probe.inheritedSelectors[variable]).toBeUndefined();
+      }
+    } finally {
+      for (const [name, value] of Object.entries(previousEnv)) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });
