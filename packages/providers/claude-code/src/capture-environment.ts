@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { access, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,10 @@ export const CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS = [
   "CLAUDE_CODE_USE_MANTLE",
 ] as const;
 
+const CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_NAMES = new Set<string>(
+  CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS.map((variable) => variable.toUpperCase()),
+);
+
 export function createClaudeCaptureEnv(
   baseUrl: string,
   parentEnv: NodeJS.ProcessEnv = process.env,
@@ -22,8 +26,10 @@ export function createClaudeCaptureEnv(
     ANTHROPIC_BASE_URL: baseUrl,
   };
 
-  for (const variable of CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS) {
-    delete captureEnv[variable];
+  for (const variable of Object.keys(captureEnv)) {
+    if (CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_NAMES.has(variable.toUpperCase())) {
+      delete captureEnv[variable];
+    }
   }
 
   return captureEnv;
@@ -36,6 +42,9 @@ export function createClaudeCaptureSettings(baseUrl: string): string {
 
   for (const variable of CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS) {
     env[variable] = "";
+    // Windows treats environment names case-insensitively. Keep a lowercase
+    // alias so the CLI override also wins when a settings file uses that form.
+    env[variable.toLowerCase()] = "";
   }
 
   return JSON.stringify({ env });
@@ -64,27 +73,25 @@ export function createClaudeCaptureSpawn(
     return { command, args };
   }
 
-  const commandLine = [command, ...args].map(quoteWindowsCmdArg).join(" ");
-  return {
-    command: options.comSpec ?? process.env.ComSpec ?? "cmd.exe",
-    args: ["/d", "/s", "/c", `"${commandLine}"`],
-    windowsVerbatimArguments: true,
-  };
-}
-
-export function quoteWindowsCmdArg(value: string): string {
-  // Reject expansion/control characters; quoted cmd arguments preserve the rest.
-  if (/[\u0000\r\n%!]/u.test(value)) {
-    throw new Error("capture command contains unsupported Windows shell characters");
+  for (const argument of [command, ...args]) {
+    if (/[\u0000\r\n%&|<>^!()]/u.test(argument)) {
+      throw new Error("capture command contains unsupported Windows shell characters");
+    }
   }
 
-  return `"${value.replace(/"/g, '""')}"`;
+  // Let Node quote each argv element for CreateProcess. Passing the script as
+  // its own /c argument avoids constructing a shell command string (DEP0190).
+  return {
+    command: options.comSpec ?? process.env.ComSpec ?? "cmd.exe",
+    args: ["/d", "/c", command, ...args],
+  };
 }
 
 interface ClaudeManagedSettingsProbeOptions {
   platform?: NodeJS.Platform;
   managedSettingsDir?: string;
   commandProbe?: (command: string, args: string[]) => boolean;
+  wslProbe?: () => Promise<boolean>;
 }
 
 export async function hasClaudeEndpointManagedSettings(
@@ -101,6 +108,12 @@ export async function hasClaudeEndpointManagedSettings(
     }
   }
 
+  // WSL can inherit Windows HKLM/HKCU Claude policies. There is no reliable,
+  // side-effect-free registry read from every WSL distribution, so fail closed.
+  if (currentPlatform === "linux" && await (options.wslProbe ?? isWslEnvironment)()) {
+    return true;
+  }
+
   const commandProbe = options.commandProbe ?? probeManagedSettingsCommand;
   if (currentPlatform === "darwin") {
     return commandProbe("/usr/bin/defaults", [
@@ -110,16 +123,38 @@ export async function hasClaudeEndpointManagedSettings(
   }
 
   if (currentPlatform === "win32") {
-    return commandProbe("reg.exe", [
+    // Use an absolute system path; a bare reg.exe could be hijacked from cwd.
+    const systemRoot = process.env.SystemRoot;
+    const registryCommand = join(
+      systemRoot && (systemRoot.startsWith("\\\\") || /^[A-Za-z]:[\\/]/u.test(systemRoot))
+        ? systemRoot
+        : "C:\\Windows",
+      "System32",
+      "reg.exe",
+    );
+    return commandProbe(registryCommand, [
       "query",
       "HKLM\\SOFTWARE\\Policies\\ClaudeCode",
-    ]) || commandProbe("reg.exe", [
+    ]) || commandProbe(registryCommand, [
       "query",
       "HKCU\\SOFTWARE\\Policies\\ClaudeCode",
     ]);
   }
 
   return false;
+}
+
+async function isWslEnvironment(): Promise<boolean> {
+  if (process.env.WSL_INTEROP || process.env.WSL_DISTRO_NAME) {
+    return true;
+  }
+
+  try {
+    const kernelRelease = await readFile("/proc/sys/kernel/osrelease", "utf8");
+    return /(?:microsoft|wsl)/iu.test(kernelRelease);
+  } catch {
+    return false;
+  }
 }
 
 function defaultManagedSettingsDirs(currentPlatform: NodeJS.Platform): string[] {

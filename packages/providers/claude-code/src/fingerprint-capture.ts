@@ -493,11 +493,18 @@ async function runClaudeCapture(params: {
     const invocation = createClaudeCaptureSpawn(
       params.binaryPath,
       command,
-      [...args, "--settings", settingsPath],
+      [
+        ...args,
+        "--setting-sources",
+        "project,local",
+        "--settings",
+        settingsPath,
+      ],
     );
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(invocation.command, invocation.args, {
+        cwd: dirname(settingsPath),
         env: createClaudeCaptureEnv(params.baseUrl),
         stdio: "ignore",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,

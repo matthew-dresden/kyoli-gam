@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage } from "node:http";
+import { dirname } from "node:path";
 import {
   findClaudeCodeBinary,
   probeClaudeVersion,
@@ -243,11 +244,18 @@ async function runClaudeCapture(
     const invocation = createClaudeCaptureSpawn(
       binaryPath,
       command,
-      [...args, "--settings", settingsPath],
+      [
+        ...args,
+        "--setting-sources",
+        "project,local",
+        "--settings",
+        settingsPath,
+      ],
     );
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(invocation.command, invocation.args, {
+        cwd: dirname(settingsPath),
         env: createClaudeCaptureEnv(baseUrl),
         stdio: "ignore",
         windowsHide: true,

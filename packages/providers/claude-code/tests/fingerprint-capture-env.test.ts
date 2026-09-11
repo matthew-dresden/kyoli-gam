@@ -53,6 +53,7 @@ describe("fingerprint capture environment", () => {
     const parentEnv = Object.fromEntries(
       CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS.map((variable) => [variable, "1"]),
     );
+    parentEnv.claude_code_use_bedrock = "1";
     parentEnv["unrelated"] = "preserved";
     const childEnv = createClaudeCaptureEnv("http://127.0.0.1:1234/capture", parentEnv);
 
@@ -62,6 +63,7 @@ describe("fingerprint capture environment", () => {
         `${variable} must be removed from the capture environment`,
       ).toBeUndefined();
     }
+    expect(childEnv.claude_code_use_bedrock).toBeUndefined();
     expect(childEnv.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:1234/capture");
     expect(childEnv["unrelated"]).toBe("preserved");
     expect(parentEnv.CLAUDE_CODE_USE_BEDROCK).toBe("1");
@@ -75,10 +77,11 @@ describe("fingerprint capture environment", () => {
     expect(settings.env.ANTHROPIC_BASE_URL).toBe("http://127.0.0.1:1234/capture");
     for (const variable of CLAUDE_CAPTURE_ALTERNATE_BACKEND_ENV_VARS) {
       expect(settings.env[variable], `${variable} must be explicitly disabled`).toBe("");
+      expect(settings.env[variable.toLowerCase()], `${variable} lowercase alias must be disabled`).toBe("");
     }
   });
 
-  it("uses a quoted cmd.exe command instead of shell argument concatenation", () => {
+  it("passes cmd.exe arguments without shell command concatenation", () => {
     const invocation = createClaudeCaptureSpawn(
       "C:\\Users\\Name With Space\\claude.cmd",
       "C:\\Users\\Name With Space\\claude.cmd",
@@ -93,22 +96,18 @@ describe("fingerprint capture environment", () => {
       command: "C:\\Windows\\System32\\cmd.exe",
       args: [
         "/d",
-        "/s",
         "/c",
-        '""C:\\Users\\Name With Space\\claude.cmd" "--print" "-p" "hi" "--settings" "C:\\Temp\\settings.json""',
+        "C:\\Users\\Name With Space\\claude.cmd",
+        "--print",
+        "-p",
+        "hi",
+        "--settings",
+        "C:\\Temp\\settings.json",
       ],
-      windowsVerbatimArguments: true,
     });
-    const metacharInvocation = createClaudeCaptureSpawn(
-      "C:\\Users\\Name&Other\\claude.cmd",
-      "C:\\Users\\Name&Other\\claude.cmd",
-      [],
-      { platform: "win32" },
-    );
-    expect(metacharInvocation.args[3]).toContain('"C:\\Users\\Name&Other\\claude.cmd"');
     expect(() => createClaudeCaptureSpawn(
-      "C:\\Users\\Name%Other\\claude.cmd",
-      "C:\\Users\\Name%Other\\claude.cmd",
+      "C:\\Users\\Name&Other\\claude.cmd",
+      "C:\\Users\\Name&Other\\claude.cmd",
       [],
       { platform: "win32" },
     )).toThrow(/unsupported Windows shell characters/);
@@ -118,6 +117,7 @@ describe("fingerprint capture environment", () => {
     expect(source).toContain("createClaudeCaptureEnv");
     expect(source).toContain("withClaudeCaptureSettings");
     expect(source).toContain("createClaudeCaptureSpawn");
+    expect(source).toContain("--setting-sources");
     expect(environmentSource).toContain("delete captureEnv[variable]");
     expect(source).not.toContain("delete process.env.CLAUDE_CODE_USE_BEDROCK");
   });
@@ -144,6 +144,12 @@ describe("fingerprint capture environment", () => {
       })).toBe(true);
       await rm(join(tempDir, "managed-settings.json"));
 
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "linux",
+        managedSettingsDir: join(tempDir, "missing-wsl"),
+        wslProbe: async () => true,
+      })).toBe(true);
+
       await mkdir(dropInDir);
       await writeFile(join(dropInDir, ".ignored.json"), "{}", "utf8");
       expect(await hasClaudeEndpointManagedSettings({
@@ -165,6 +171,22 @@ describe("fingerprint capture environment", () => {
         command: "/usr/bin/defaults",
         args: ["read", "com.anthropic.claudecode"],
       }]);
+
+      const windowsCalls: Array<{ command: string; args: string[] }> = [];
+      const windowsProbe = (command: string, args: string[]): boolean => {
+        windowsCalls.push({ command, args });
+        return false;
+      };
+      expect(await hasClaudeEndpointManagedSettings({
+        platform: "win32",
+        managedSettingsDir: join(tempDir, "missing-windows"),
+        commandProbe: windowsProbe,
+      })).toBe(false);
+      expect(windowsCalls).toHaveLength(2);
+      expect(windowsCalls.every(({ command }) => (
+        /[\\/]System32[\\/]reg\.exe$/iu.test(command)
+        && command !== "reg.exe"
+      ))).toBe(true);
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -190,6 +212,7 @@ describe("fingerprint capture environment", () => {
       JSON.stringify({
         env: {
           ANTHROPIC_BASE_URL: "https://settings.invalid",
+          claude_code_use_bedrock: "1",
           ...Object.fromEntries(alternateBackendVars.map((variable) => [variable, "1"])),
         },
       }),
