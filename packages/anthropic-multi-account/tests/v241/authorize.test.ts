@@ -355,3 +355,36 @@ describe("v241 authorize - pool expiry units convention pin (P2 #2870)", () => {
     }
   });
 });
+
+describe("v241 refresh - accountId is never a credential value (FIX 1, MAJOR #2870)", () => {
+  test("pool-miss refresh failure logs a non-credential accountId sentinel", async () => {
+    const { createRefresh } = await import("../../src/v241/authorize");
+    const anthropicOAuth = await import("../../src/oauth/anthropic-oauth");
+    const { refreshToken } = await import("../../src/oauth/token");
+    const { createMockClient } = await import("../helpers");
+    const vi = (await import("vitest")).vi;
+    const REFRESH_TOKEN = "rt-live-fixture-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const client = createMockClient();
+    const spy = vi.spyOn(anthropicOAuth, "refreshWithOAuth").mockRejectedValue(
+      new Error(
+        `Anthropic token request failed. url=https://platform.claude.com/v1/oauth/token; details=Error: HTTP request failed. status=400; url=https://platform.claude.com/v1/oauth/token; body={"error":"invalid_grant"}`,
+      ),
+    );
+    try {
+      const refresh = createRefresh({
+        refreshTokenFn: (rt, accountId, c) => refreshToken(rt, accountId, c),
+        client,
+      });
+      // credential ABSENT from the pool (fresh isolated store): exercises the fallback
+      await expect(
+        refresh({ type: "oauth", methodID: "claude-multi-auth", access: "a", refresh: REFRESH_TOKEN, expires: Date.now() }),
+      ).rejects.toThrow(/Token refresh failed/);
+      expect(client.logs.length).toBe(1);
+      const serialized = JSON.stringify(client.logs[0]);
+      expect(serialized).not.toContain(REFRESH_TOKEN);
+      expect(client.logs[0]?.extra).toMatchObject({ accountId: "unmapped" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

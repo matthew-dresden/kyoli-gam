@@ -151,7 +151,10 @@ export function createRefresh(deps: RefreshDeps = {}): (credential: CredentialOA
     const store = new AccountStore();
     const storage = await store.load();
     const existing = storage.accounts.find((account) => account.refreshToken === credential.refresh);
-    const accountId = existing?.uuid ?? credential.refresh;
+    // FIX 1 (#2870 MAJOR): the accountId feeds the refresh log and the in-flight mutex
+    // key. NEVER fall back to a credential value - a pool miss (corrupt reset, restored
+    // auth.json) would otherwise persist the raw refresh token into logs on failure.
+    const accountId = existing?.uuid ?? "unmapped";
 
     const result = await refreshTokenFn(credential.refresh, accountId, client);
     if (!result.ok) {
