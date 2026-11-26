@@ -29,6 +29,26 @@ export interface RequestSeamDeps {
   buildHeaders?: () => Record<string, string>;
 }
 
+function deleteHeaderCaseInsensitive(headers: Record<string, string>, name: string): void {
+  for (const existing of Object.keys(headers)) {
+    if (existing.toLowerCase() === name.toLowerCase()) {
+      delete headers[existing];
+    }
+  }
+}
+
+/**
+ * Sets each addition after removing case-variant keys already present, so the outbound
+ * header map never carries two keys that differ only by case (e.g. the fork's
+ * `user-agent` colliding with a base `User-Agent`).
+ */
+function overrideHeadersCaseInsensitive(headers: Record<string, string>, additions: Record<string, string>): void {
+  for (const [key, value] of Object.entries(additions)) {
+    deleteHeaderCaseInsensitive(headers, key);
+    headers[key] = value;
+  }
+}
+
 function defaultForkHeaders(): Record<string, string> {
   const sessionId = getUpstreamSessionId();
   return {
@@ -52,7 +72,9 @@ export function createModelRequestHandler(
     if (!token) return;
 
     event.headers.authorization = `Bearer ${token}`;
-    Object.assign(event.headers, deps.buildHeaders?.() ?? defaultForkHeaders());
+    // Bearer and API-key auth must never travel together on the same request.
+    deleteHeaderCaseInsensitive(event.headers, "x-api-key");
+    overrideHeadersCaseInsensitive(event.headers, deps.buildHeaders?.() ?? defaultForkHeaders());
   };
 }
 

@@ -121,6 +121,62 @@ describe("registerRequestSeam", () => {
     expect(event.headers).toEqual({ "x-base": "keep-me" });
   });
 
+  test("model.request handler removes x-api-key when injecting the Bearer token (case-insensitive)", async () => {
+    const { registerRequestSeam } = await import("../../src/v241/request-seam");
+    const { ctx, sessionHookCalls } = createMockCtx();
+
+    await registerRequestSeam(ctx, {
+      getActiveAccessToken: async () => "fixture-access-token",
+      rotateOnFailure: async () => {},
+      buildHeaders: () => ({}),
+    });
+
+    const handler = sessionHookCalls.find((call) => call.name === "model.request")!.callback;
+    const event = {
+      sessionID: "s-1",
+      agent: "build",
+      model: { providerID: "anthropic", modelID: "claude-x" },
+      kind: "primary",
+      headers: { "X-Api-Key": "fixture-api-key", "x-base": "keep-me" },
+    } as ModelRequestEvent;
+
+    await handler(event as never);
+
+    // Bearer and API-key auth must never travel together.
+    const apiKeyKeys = Object.keys(event.headers).filter((key) => key.toLowerCase() === "x-api-key");
+    expect(apiKeyKeys).toEqual([]);
+    expect(event.headers.authorization).toBe("Bearer fixture-access-token");
+    expect(event.headers["x-base"]).toBe("keep-me");
+  });
+
+  test("fork headers override case-variant existing keys instead of duplicating them", async () => {
+    const { registerRequestSeam } = await import("../../src/v241/request-seam");
+    const { ctx, sessionHookCalls } = createMockCtx();
+
+    await registerRequestSeam(ctx, {
+      getActiveAccessToken: async () => "fixture-access-token",
+      rotateOnFailure: async () => {},
+      buildHeaders: () => ({ "user-agent": "fork-ua", "x-fork-static": "fixture-static" }),
+    });
+
+    const handler = sessionHookCalls.find((call) => call.name === "model.request")!.callback;
+    const event = {
+      sessionID: "s-1",
+      agent: "build",
+      model: { providerID: "anthropic", modelID: "claude-x" },
+      kind: "primary",
+      headers: { "User-Agent": "base-ua", "user-agent": "duplicate-ua" },
+    } as ModelRequestEvent;
+
+    await handler(event as never);
+
+    // Exactly one case-variant key survives per fork-owned header.
+    const uaKeys = Object.keys(event.headers).filter((key) => key.toLowerCase() === "user-agent");
+    expect(uaKeys).toEqual(["user-agent"]);
+    expect(event.headers["user-agent"]).toBe("fork-ua");
+    expect(event.headers["x-fork-static"]).toBe("fixture-static");
+  });
+
   test("http.response handler triggers rotation on 401 and 429 only", async () => {
     const { registerRequestSeam } = await import("../../src/v241/request-seam");
     const { ctx, sessionHookCalls } = createMockCtx();
