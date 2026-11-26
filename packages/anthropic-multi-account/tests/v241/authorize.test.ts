@@ -295,3 +295,63 @@ describe("v241 refresh", () => {
     expect(storage.accounts).toHaveLength(0);
   });
 });
+
+describe("v241 refresh - classified refusal surface (P2 #2870)", () => {
+  test("refresh error carries status and class from the classified result", async () => {
+    const { createRefresh } = await import("../../src/v241/authorize");
+    const refresh = createRefresh({
+      refreshTokenFn: async () => ({
+        ok: false,
+        permanent: false,
+        status: 429,
+        message: "Anthropic token request failed. url=https://platform.claude.com/v1/oauth/token; details=status=429",
+      }),
+      client: { app: { log: async () => {} } } as never,
+    });
+    await expect(
+      refresh({ type: "oauth", methodID: "claude-multi-auth", access: "a", refresh: "r", expires: Date.now() }),
+    ).rejects.toThrow(/status=429.*transient/s);
+  });
+});
+
+describe("v241 authorize - pool expiry units convention pin (P2 #2870)", () => {
+  test("pool store receives credential.expires verbatim in epoch ms (no re-multiplication)", async () => {
+    const { createAuthorize } = await import("../../src/v241/authorize");
+    const exchangeCode = async () => ({
+      access_token: "at-fixture",
+      refresh_token: "rt-fixture",
+      expires_in: 28_733,
+      account: { uuid: "acct-1", email_address: "pin@example.com" },
+    });
+    const loadOAuthConfig = async () => ({
+      authorizeUrl: "https://claude.ai/oauth/authorize",
+      clientId: "fixture-client-id",
+      scopes: "user:profile",
+      source: "fixture" as const,
+    });
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v241-units-pin-"));
+    const originalEnv = process.env.OPENCODE_CONFIG_DIR;
+    process.env.OPENCODE_CONFIG_DIR = dir;
+    try {
+      const authorize = createAuthorize({ exchangeCode, loadOAuthConfig } as never);
+      const authorization = await authorize();
+      const credential = await (
+        authorization as { callback: (code: string) => Promise<{ expires: number }> }
+      ).callback("pin-code");
+      // convention source: credential.expires is epoch ms = now + expires_in(seconds) * 1000
+      expect(credential.expires).toBeGreaterThan(Date.now() + 28_000_000);
+      expect(credential.expires).toBeLessThan(Date.now() + 29_500_000);
+      // verbatim storage: pool expiresAt must equal credential.expires exactly (no *1000 anywhere)
+      const storePath = path.join(dir, "anthropic-multi-account-accounts.json");
+      const stored = JSON.parse(fs.readFileSync(storePath, "utf8")) as { accounts: Array<{ expiresAt: number }> };
+      expect(stored.accounts[0]?.expiresAt).toBe(credential.expires);
+    } finally {
+      if (originalEnv === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = originalEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
