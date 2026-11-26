@@ -3,6 +3,8 @@ import { createAuthorize, createRefresh } from "./authorize";
 import { registerIntegrationMethod } from "./integration-registration";
 import { createPoolAccessors, registerRequestSeam } from "./request-seam";
 import { seedPoolFromStoredCredential } from "./seed";
+import { createCoexistenceCheck, clientLog, defaultListIntegrations } from "./coexistence";
+import { createMinimalClient } from "../shared/utils";
 import type { PluginContext } from "./types";
 
 if (process.env.CLAUDE_MULTI_ACCOUNT_TRACE_PLUGIN === "1") {
@@ -34,6 +36,13 @@ export const v241Definition = {
     // Seed the pool from the stored auth.json credential when the pool is empty
     // (pre-existing owner logins); the v2.4.1 authorize flow writes the pool itself.
     await seedPoolFromStoredCredential(new AccountStore());
+
+    // FIX 4 (#2870, no-money directive): warn loudly if an API-key credential
+    // coexists with the pool on the anthropic integration (paid-billing risk).
+    await createCoexistenceCheck({
+      listIntegrations: defaultListIntegrations(ctx),
+      log: clientLog(createMinimalClient()),
+    })();
   },
 };
 
