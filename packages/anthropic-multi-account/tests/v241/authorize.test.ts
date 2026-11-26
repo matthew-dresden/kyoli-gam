@@ -345,7 +345,8 @@ describe("v241 authorize - pool expiry units convention pin (P2 #2870)", () => {
       expect(credential.expires).toBeGreaterThan(Date.now() + 28_000_000);
       expect(credential.expires).toBeLessThan(Date.now() + 29_500_000);
       // verbatim storage: pool expiresAt must equal credential.expires exactly (no *1000 anywhere)
-      const storePath = path.join(dir, "anthropic-multi-account-accounts.json");
+      const { ACCOUNTS_FILENAME } = await import("../../src/shared/constants");
+      const storePath = path.join(dir, ACCOUNTS_FILENAME);
       const stored = JSON.parse(fs.readFileSync(storePath, "utf8")) as { accounts: Array<{ expiresAt: number }> };
       expect(stored.accounts[0]?.expiresAt).toBe(credential.expires);
     } finally {
