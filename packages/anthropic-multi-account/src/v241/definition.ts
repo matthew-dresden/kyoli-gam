@@ -1,5 +1,6 @@
 import { createAuthorize, createRefresh } from "./authorize";
 import { registerIntegrationMethod } from "./integration-registration";
+import { createPoolAccessors, registerRequestSeam } from "./request-seam";
 import type { PluginContext } from "./types";
 
 if (process.env.CLAUDE_MULTI_ACCOUNT_TRACE_PLUGIN === "1") {
@@ -25,7 +26,10 @@ export const v241Definition = {
       refresh: createRefresh(),
     });
 
-    // Request seam and pool seeding are wired by the request-seam.ts / seed.ts units.
+    // Header injection + 401/429 rotation over the pool (lazy pool accessors).
+    await registerRequestSeam(ctx, createPoolAccessors());
+
+    // Pool seeding is wired by the seed.ts unit.
   },
 };
 
