@@ -1,6 +1,8 @@
+import { AccountStore } from "../accounts/store";
 import { createAuthorize, createRefresh } from "./authorize";
 import { registerIntegrationMethod } from "./integration-registration";
 import { createPoolAccessors, registerRequestSeam } from "./request-seam";
+import { seedPoolFromStoredCredential } from "./seed";
 import type { PluginContext } from "./types";
 
 if (process.env.CLAUDE_MULTI_ACCOUNT_TRACE_PLUGIN === "1") {
@@ -29,7 +31,9 @@ export const v241Definition = {
     // Header injection + 401/429 rotation over the pool (lazy pool accessors).
     await registerRequestSeam(ctx, createPoolAccessors());
 
-    // Pool seeding is wired by the seed.ts unit.
+    // Seed the pool from the stored auth.json credential when the pool is empty
+    // (pre-existing owner logins); the v2.4.1 authorize flow writes the pool itself.
+    await seedPoolFromStoredCredential(new AccountStore());
   },
 };
 

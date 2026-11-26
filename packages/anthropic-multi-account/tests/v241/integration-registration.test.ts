@@ -1,4 +1,5 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { setupTestEnv } from "../helpers";
 import type { IntegrationEditor, OAuthMethodRegistration, PluginContext } from "../../src/v241/types";
 
 // v2.4.1 contract (opencode-plugin/plugin/src/effect/integration.ts + promise/adapter.ts):
@@ -35,6 +36,18 @@ function createMockCtx() {
 }
 
 describe("registerIntegrationMethod", () => {
+  // Hermetic config dir: definition.setup runs the pool seed seam, which reads
+  // (and would create) the pool store under OPENCODE_CONFIG_DIR. Keep the tests
+  // off the machine's real opencode config dir.
+  let testEnv: Awaited<ReturnType<typeof setupTestEnv>> | null = null;
+  beforeEach(async () => {
+    testEnv = await setupTestEnv();
+  });
+  afterEach(async () => {
+    await testEnv?.cleanup();
+    testEnv = null;
+  });
+
   test("registers the claude-multi-auth oauth method on the anthropic integration", async () => {
     const { registerIntegrationMethod } = await import("../../src/v241/integration-registration");
     const { ctx, integrationTransformCbs } = createMockCtx();
