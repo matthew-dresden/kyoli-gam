@@ -420,11 +420,14 @@ describe("token - classified refusals (P2 #2870)", () => {
 
 describe("token - unmapped accountId mutex isolation (P4 #2870)", () => {
   test("concurrent unmapped refreshes of DIFFERENT credentials do not share a result", async () => {
+    const anthropicOAuth = await import("../../src/oauth/anthropic-oauth");
+    const vi = (await import("vitest")).vi;
+    const spy = vi.spyOn(anthropicOAuth, "refreshWithOAuth");
     const client = createMockClient();
     const deferredA = createDeferred<CredentialRefreshPatch>();
     const deferredB = createDeferred<CredentialRefreshPatch>();
     let calls = 0;
-    refreshWithOAuthSpy.mockImplementation(() => {
+    spy.mockImplementation(() => {
       calls += 1;
       return calls === 1 ? deferredA.promise : deferredB.promise;
     });
@@ -438,5 +441,7 @@ describe("token - unmapped accountId mutex isolation (P4 #2870)", () => {
     expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
     expect(resultA.ok && resultA.patch.accessToken).toBe("access-A");
     expect(resultB.ok && resultB.patch.accessToken).toBe("access-B");
+    spy.mockRestore();
+    clearRefreshMutex();
   });
 });
