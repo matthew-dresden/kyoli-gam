@@ -116,7 +116,7 @@ function resolveStoredClaudeIdentity(tokens: TokenResponse): Pick<StoredAccount,
   };
 }
 
-function buildAuthorizeUrl(params: {
+export function buildAuthorizeUrl(params: {
   authorizeUrl: string;
   clientId: string;
   scopes: string;
@@ -179,7 +179,7 @@ async function postTokenEndpoint(
 
 const CODE_EXCHANGE_TIMEOUT_MS = 30_000;
 
-async function exchangeCodeForTokens(params: {
+export async function exchangeCodeForTokens(params: {
   code: string;
   codeVerifier: string;
   state: string;
