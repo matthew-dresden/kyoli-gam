@@ -7,6 +7,7 @@ import {
 } from "../oauth/anthropic-oauth";
 import { generatePKCE, generateState } from "../oauth/pkce";
 import { refreshToken } from "../oauth/token";
+import { METHOD_ID } from "./integration-registration";
 import type { AccountMetadataPatch } from "opencode-multi-account-core";
 import type {
   PluginClient,
@@ -91,6 +92,9 @@ export function createAuthorize(deps: AuthorizeDeps = {}): () => Promise<Integra
 
         const credential: CredentialOAuth = {
           type: "oauth",
+          // Required by the v2.4.1 Credential.OAuth schema; the host's auto-refresh
+          // lookup keys on this value (core/src/integration.ts).
+          methodID: METHOD_ID,
           access: tokens.access_token,
           refresh: tokens.refresh_token ?? "",
           // The fork stores epoch ms: now + expires_in (seconds) * 1000 (src/oauth/anthropic-oauth.ts loginWithOAuth).
@@ -107,7 +111,13 @@ export function createAuthorize(deps: AuthorizeDeps = {}): () => Promise<Integra
             accountId: tokens.account?.uuid,
             accountUuid: tokens.account?.uuid,
           };
-          const emptyAuth: CredentialOAuth = { type: "oauth", refresh: "", access: "", expires: 0 };
+          const emptyAuth: CredentialOAuth = {
+            type: "oauth",
+            methodID: METHOD_ID,
+            refresh: "",
+            access: "",
+            expires: 0,
+          };
           const store = new AccountStore();
           const manager = await AccountManager.create(store, emptyAuth, client);
           await manager.addAccount(credential, tokens.account?.email_address, metadata);
@@ -162,6 +172,7 @@ export function createRefresh(deps: RefreshDeps = {}): (credential: CredentialOA
 
     return {
       type: "oauth",
+      methodID: METHOD_ID,
       access: patch.accessToken,
       refresh: patch.refreshToken ?? credential.refresh,
       expires: patch.expiresAt,

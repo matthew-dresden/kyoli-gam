@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { beforeEach, afterEach, describe, expect, test } from "vitest";
 import { createMockClient, setupTestEnv } from "../helpers";
 import { AccountStore } from "../../src/accounts/store";
 import { ACCOUNTS_FILENAME } from "../../src/shared/constants";
@@ -7,8 +7,29 @@ import type { CredentialOAuth } from "../../src/v241/types";
 // Authorize/refresh adapt the fork's existing PKCE + exchange + pool machinery to the
 // opencode v2.4.1 integration OAuth contract (opencode-plugin/plugin/src/promise/integration.ts):
 // `authorize` returns `{ url, instructions, mode: "code", callback }` and `callback(code)`
-// returns a `Credential.OAuth { type, access, refresh, expires }` (epoch-ms `expires`,
-// @opencode/schema/credential), while recording the exchanged account into the pool store.
+// returns a `Credential.OAuth { type, methodID, access, refresh, expires }` (epoch-ms
+// `expires`, required `methodID`; @opencode/schema/credential v2.4.1), while recording
+// the exchanged account into the pool store.
+
+// ISOLATION: every test in this file can invoke the authorize/refresh callbacks, and the
+// callbacks write the pool store when a refresh token is present. Without
+// OPENCODE_CONFIG_DIR, AccountStore falls back to the machine's real
+// ~/.config/opencode (multi-account-core config.ts), so a fresh temp dir is installed
+// for EVERY test below and restored afterwards.
+let testEnv: Awaited<ReturnType<typeof setupTestEnv>> | null = null;
+let testDir: string;
+
+beforeEach(async () => {
+  testEnv = await setupTestEnv();
+  testDir = testEnv.dir;
+  // Guard: store touchpoints must resolve under the sandbox dir, never the real config dir.
+  expect(process.env.OPENCODE_CONFIG_DIR).toBe(testDir);
+});
+
+afterEach(async () => {
+  await testEnv?.cleanup();
+  testEnv = null;
+});
 
 const FIXTURE_OAUTH_CONFIG = {
   clientId: "fixture-client-id",
@@ -91,7 +112,7 @@ describe("v241 authorize", () => {
     expect(url.searchParams.get("state")).toBeTruthy();
   });
 
-  test("callback exchanges the code and maps the token payload to Credential.OAuth (epoch-ms expires)", async () => {
+  test("callback exchanges the code and maps the token payload to Credential.OAuth (epoch-ms expires, methodID)", async () => {
     const { createAuthorize } = await import("../../src/v241/authorize");
     const fake = createFakeExchange();
 
@@ -102,11 +123,14 @@ describe("v241 authorize", () => {
     });
 
     const authorization = await authorize();
+    // Guard: the callback writes the pool store; it must stay in the sandbox dir.
+    expect(process.env.OPENCODE_CONFIG_DIR).toBe(testDir);
     const before = Date.now();
     const credential = await authorization.callback("fixture-code");
     const after = Date.now();
 
     expect(credential.type).toBe("oauth");
+    expect(credential.methodID).toBe("claude-multi-auth");
     expect(credential.access).toBe("fixture-access-token");
     expect(credential.refresh).toBe("fixture-refresh-token");
     // expires_in is seconds; the fork stores epoch ms (now + expires_in * 1000).
@@ -123,31 +147,28 @@ describe("v241 authorize", () => {
   });
 
   test("callback records the exchanged account into the pool store as the active account", async () => {
-    const testEnv = await setupTestEnv();
-    try {
-      const { createAuthorize } = await import("../../src/v241/authorize");
-      const fake = createFakeExchange();
+    const { createAuthorize } = await import("../../src/v241/authorize");
+    const fake = createFakeExchange();
 
-      const authorize = createAuthorize({
-        loadOAuthConfig: async () => FIXTURE_OAUTH_CONFIG,
-        exchangeCode: fake.exchange,
-        client: createMockClient(),
-      });
+    const authorize = createAuthorize({
+      loadOAuthConfig: async () => FIXTURE_OAUTH_CONFIG,
+      exchangeCode: fake.exchange,
+      client: createMockClient(),
+    });
 
-      const authorization = await authorize();
-      const credential = await authorization.callback("fixture-code");
+    const authorization = await authorize();
+    const credential = await authorization.callback("fixture-code");
 
-      const storage = await readStorageFile(testEnv.dir);
-      expect(storage.accounts).toHaveLength(1);
-      const stored = storage.accounts[0]!;
-      expect(stored.accessToken).toBe(credential.access);
-      expect(stored.refreshToken).toBe(credential.refresh);
-      expect(stored.expiresAt).toBe(credential.expires);
-      expect(stored.email).toBe("fixture@example.com");
-      expect(storage.activeAccountUuid).toBe(stored.uuid);
-    } finally {
-      await testEnv.cleanup();
-    }
+    // Reading the store under the sandbox dir and finding the account proves the
+    // resolved store path stayed under OPENCODE_CONFIG_DIR for this callback.
+    const storage = await readStorageFile(testDir);
+    expect(storage.accounts).toHaveLength(1);
+    const stored = storage.accounts[0]!;
+    expect(stored.accessToken).toBe(credential.access);
+    expect(stored.refreshToken).toBe(credential.refresh);
+    expect(stored.expiresAt).toBe(credential.expires);
+    expect(stored.email).toBe("fixture@example.com");
+    expect(storage.activeAccountUuid).toBe(stored.uuid);
   });
 
   test("callback accepts the console paste format code#state and rejects a mismatched state", async () => {
@@ -165,6 +186,7 @@ describe("v241 authorize", () => {
 
     const credential = await authorization.callback(`fixture-code#${state}`);
     expect(credential.access).toBe("fixture-access-token");
+    expect(credential.methodID).toBe("claude-multi-auth");
     expect(fake.calls[0]!.code).toBe("fixture-code");
 
     await expect(authorization.callback("fixture-code#tampered-state")).rejects.toThrow(/state/i);
@@ -209,73 +231,67 @@ describe("v241 refresh", () => {
   }
 
   test("refresh maps the fork refresh patch to a new Credential.OAuth", async () => {
-    const testEnv = await setupTestEnv();
-    try {
-      await seedPoolStore();
-      const { createRefresh } = await import("../../src/v241/authorize");
-      const fake = createFakeRefresh();
+    await seedPoolStore();
+    const { createRefresh } = await import("../../src/v241/authorize");
+    const fake = createFakeRefresh();
 
-      const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
-      const credential: CredentialOAuth = {
-        type: "oauth",
-        access: "old-access-token",
-        refresh: "fixture-refresh-token",
-        expires: 1,
-      };
+    const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
+    const credential: CredentialOAuth = {
+      type: "oauth",
+      methodID: "claude-multi-auth",
+      access: "old-access-token",
+      refresh: "fixture-refresh-token",
+      expires: 1,
+    };
 
-      const next = await refresh(credential);
+    const next = await refresh(credential);
 
-      expect(next.type).toBe("oauth");
-      expect(next.access).toBe("new-access-token");
-      expect(next.refresh).toBe("new-refresh-token");
-      expect(next.expires).toBeGreaterThan(Date.now());
-      expect(fake.calls).toHaveLength(1);
-      expect(fake.calls[0]!.refreshToken).toBe("fixture-refresh-token");
-      expect(fake.calls[0]!.accountId).toBe("uuid-1");
-    } finally {
-      await testEnv.cleanup();
-    }
+    expect(next.type).toBe("oauth");
+    expect(next.methodID).toBe("claude-multi-auth");
+    expect(next.access).toBe("new-access-token");
+    expect(next.refresh).toBe("new-refresh-token");
+    expect(next.expires).toBeGreaterThan(Date.now());
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]!.refreshToken).toBe("fixture-refresh-token");
+    expect(fake.calls[0]!.accountId).toBe("uuid-1");
   });
 
   test("refresh updates the matching pool store entry", async () => {
-    const testEnv = await setupTestEnv();
-    try {
-      await seedPoolStore();
-      const { createRefresh } = await import("../../src/v241/authorize");
-      const fake = createFakeRefresh();
+    await seedPoolStore();
+    const { createRefresh } = await import("../../src/v241/authorize");
+    const fake = createFakeRefresh();
 
-      const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
-      await refresh({ type: "oauth", access: "old-access-token", refresh: "fixture-refresh-token", expires: 1 });
+    const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
+    await refresh({
+      type: "oauth",
+      methodID: "claude-multi-auth",
+      access: "old-access-token",
+      refresh: "fixture-refresh-token",
+      expires: 1,
+    });
 
-      const storage = await readStorageFile(testEnv.dir);
-      expect(storage.accounts).toHaveLength(1);
-      expect(storage.accounts[0]!.accessToken).toBe("new-access-token");
-      expect(storage.accounts[0]!.refreshToken).toBe("new-refresh-token");
-    } finally {
-      await testEnv.cleanup();
-    }
+    const storage = await readStorageFile(testDir);
+    expect(storage.accounts).toHaveLength(1);
+    expect(storage.accounts[0]!.accessToken).toBe("new-access-token");
+    expect(storage.accounts[0]!.refreshToken).toBe("new-refresh-token");
   });
 
   test("refresh of a credential missing from the pool still returns the refreshed mapping (fail-soft)", async () => {
-    const testEnv = await setupTestEnv();
-    try {
-      const { createRefresh } = await import("../../src/v241/authorize");
-      const fake = createFakeRefresh();
+    const { createRefresh } = await import("../../src/v241/authorize");
+    const fake = createFakeRefresh();
 
-      const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
-      const next = await refresh({
-        type: "oauth",
-        access: "orphan-access",
-        refresh: "orphan-refresh-token",
-        expires: 1,
-      });
+    const refresh = createRefresh({ refreshTokenFn: fake.refreshTokenFn, client: createMockClient() });
+    const next = await refresh({
+      type: "oauth",
+      methodID: "claude-multi-auth",
+      access: "orphan-access",
+      refresh: "orphan-refresh-token",
+      expires: 1,
+    });
 
-      expect(next.access).toBe("new-access-token");
-      expect(next.refresh).toBe("new-refresh-token");
-      const storage = await readStorageFile(testEnv.dir);
-      expect(storage.accounts).toHaveLength(0);
-    } finally {
-      await testEnv.cleanup();
-    }
+    expect(next.access).toBe("new-access-token");
+    expect(next.refresh).toBe("new-refresh-token");
+    const storage = await readStorageFile(testDir);
+    expect(storage.accounts).toHaveLength(0);
   });
 });

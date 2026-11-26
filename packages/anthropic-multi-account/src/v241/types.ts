@@ -13,6 +13,14 @@
 /** opencode v2.4.1 `Credential.OAuth`; `expires` is epoch milliseconds. */
 export interface CredentialOAuth {
   type: "oauth";
+  /**
+   * Required by the v2.4.1 schema (@opencode/schema/credential.ts: `methodID` is part of
+   * Credential.OAuth) and by core's credential decode: the host brands the value with
+   * `MethodID.make(value.methodID)` without validation, and every later row read decodes
+   * via CredentialLegacy.Value, which throws when methodID is missing. The auto-refresh
+   * lookup also keys on `credential.value.methodID` (core/src/integration.ts).
+   */
+  methodID: string;
   access: string;
   refresh: string;
   /** Epoch milliseconds, non-negative integer (core convention: Date.now()-based ms). */
