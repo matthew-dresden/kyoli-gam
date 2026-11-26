@@ -54,12 +54,25 @@ export class TokenRefreshError extends Error {
   }
 }
 
+/**
+ * FIX 2 (#2870): the token endpoint's response body is server-controlled text that
+ * could echo the posted refresh token under a hostile tokenUrl override. Bound it to
+ * 200 chars and redact token-like substrings (bearer forms and long opaque runs) while
+ * preserving OAuth error codes (invalid_grant etc.) that the classifier matches on.
+ */
+export function sanitizeTokenErrorBody(body: string): string {
+  const bounded = body.slice(0, 200);
+  return bounded
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer <redacted>")
+    .replace(/[A-Za-z0-9_-]{32,}/g, "<redacted>");
+}
+
 function buildTokenRequestError(url: string, details: string): Error {
-  return new Error(`Anthropic token request failed. url=${url}; details=${details}`);
+  return new Error(`Anthropic token request failed. url=${url}; details=${sanitizeTokenErrorBody(details)}`);
 }
 
 function buildTokenInvalidJsonError(url: string, body: string, details: string): Error {
-  return new Error(`Anthropic token request returned invalid JSON. url=${url}; body=${body}; details=${details}`);
+  return new Error(`Anthropic token request returned invalid JSON. url=${url}; body=${sanitizeTokenErrorBody(body)}; details=${sanitizeTokenErrorBody(details)}`);
 }
 
 function parseNodeTokenEnvelope(output: string, endpoint: string): NodeTokenEnvelope {
@@ -173,7 +186,7 @@ async function postTokenEndpoint(
 
   throw buildTokenRequestError(
     endpoint,
-    `Error: HTTP request failed. status=${result.status ?? 0}; url=${endpoint}; body=${result.body ?? ""}`,
+    `Error: HTTP request failed. status=${result.status ?? 0}; url=${endpoint}; body=${sanitizeTokenErrorBody(result.body ?? "")}`,
   );
 }
 

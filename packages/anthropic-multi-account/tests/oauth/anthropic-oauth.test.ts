@@ -1232,3 +1232,15 @@ describe("anthropic-oauth", () => {
     });
   });
 });
+
+describe("token error body redaction (FIX 2, #2870)", () => {
+  test("sanitizeTokenErrorBody redacts token-like substrings and bounds length, keeps error codes", async () => {
+    const { sanitizeTokenErrorBody } = await import("../../src/oauth/anthropic-oauth");
+    const postedToken = "rt-posted-fixture-0123456789abcdef0123456789abcdef";
+    const hostile = `{"error":"invalid_grant","echo":"Bearer ${postedToken}","leak":"${postedToken}"}`;
+    const out = sanitizeTokenErrorBody(hostile);
+    expect(out).toContain("invalid_grant");
+    expect(out).not.toContain(postedToken);
+    expect(out.length).toBeLessThanOrEqual(200);
+  });
+});
