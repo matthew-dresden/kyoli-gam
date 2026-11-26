@@ -216,7 +216,7 @@ describe("token", () => {
 
       await refreshToken("old-refresh", "same-account", client);
 
-      expect(spy).toHaveBeenCalledTimes(2);
+      expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
     });
 
     test("does not deduplicate concurrent refreshes for different accountIds", async () => {
@@ -232,7 +232,7 @@ describe("token", () => {
       const callA = refreshToken("old-refresh-a", "account-a", client);
       const callB = refreshToken("old-refresh-b", "account-b", client);
 
-      expect(spy).toHaveBeenCalledTimes(2);
+      expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
 
       deferredA.resolve({ accessToken: "token-a", expiresAt: Date.now() + 3_600_000 });
       deferredB.resolve({ accessToken: "token-b", expiresAt: Date.now() + 3_600_000 });
@@ -272,7 +272,7 @@ describe("token", () => {
       const dedupA = refreshToken("refresh-a", "account-a", client);
       const dedupB = refreshToken("refresh-b", "account-b", client);
 
-      expect(spy).toHaveBeenCalledTimes(2);
+      expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
 
       clearRefreshMutex("account-a");
 
@@ -333,7 +333,7 @@ describe("token", () => {
       const firstA = refreshToken("refresh-a", "account-a", client);
       const firstB = refreshToken("refresh-b", "account-b", client);
 
-      expect(spy).toHaveBeenCalledTimes(2);
+      expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
 
       clearRefreshMutex();
 
