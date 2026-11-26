@@ -435,3 +435,8 @@ export const ClaudeMultiAuthPlugin: Plugin = async (ctx) => {
   };
   return hooks;
 };
+
+// v2.4.1 compatibility adapter (AzDO #2863 PoC): dual export per the CSM precedent
+// (ref-csm-v2/src/index.ts). v1 hosts keep importing the named `ClaudeMultiAuthPlugin`;
+// v2.4.1 hosts load the default `{ id, setup }` definition object.
+export { v241Definition as default } from "./v241";
