@@ -256,3 +256,23 @@ describe("createPoolAccessors (default wiring against the real pool store)", () 
     }
   });
 });
+
+describe("createPoolAccessors - auth-disabled pool (FIX 3, #2870)", () => {
+  test("getActiveAccessToken returns null when the active account is auth-disabled (API-key fallback preserved)", async () => {
+    const testEnv = await setupTestEnv();
+    try {
+      const store = new AccountStore();
+      await store.addAccount({
+        planTier: "", addedAt: 1, lastUsed: 1, enabled: true, consecutiveAuthFailures: 0,
+        uuid: "uuid-dead", email: "dead@example.com", refreshToken: "refresh-dead",
+        accessToken: "fixture-dead-token", expiresAt: Date.now() + 3_600_000, isAuthDisabled: true,
+      });
+      await store.setActiveUuid("uuid-dead");
+      const { createPoolAccessors } = await import("../../src/v241/request-seam");
+      const accessors = createPoolAccessors({ client: createMockClient() });
+      await expect(accessors.getActiveAccessToken()).resolves.toBeNull();
+    } finally {
+      await testEnv.cleanup();
+    }
+  });
+});

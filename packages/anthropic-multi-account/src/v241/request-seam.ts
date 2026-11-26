@@ -128,7 +128,11 @@ export function createPoolAccessors(deps: PoolAccessorDeps = {}): PoolAccessors 
     getActiveAccessToken: async () => {
       const manager = await loadManager();
       await manager.refresh();
-      return manager.getActiveAccount()?.accessToken ?? null;
+      const active = manager.getActiveAccount();
+      // FIX 3 (#2870): an auth-disabled account must not inject a dead Bearer - the
+      // documented API-key fallback only survives when the seam leaves headers untouched.
+      if (!active || active.isAuthDisabled) return null;
+      return active.accessToken ?? null;
     },
 
     rotateOnFailure: async (status) => {
