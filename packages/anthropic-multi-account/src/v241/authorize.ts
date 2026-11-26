@@ -1,4 +1,5 @@
 import { AccountManager } from "../accounts/manager";
+import { ANTHROPIC_OAUTH_ADAPTER } from "../shared/constants";
 import { AccountStore } from "../accounts/store";
 import {
   buildAuthorizeUrl,
@@ -107,6 +108,7 @@ export function createAuthorize(deps: AuthorizeDeps = {}): () => Promise<Integra
         // bare account on an empty store, which would dedupe the addAccount below and
         // lose the email/metadata (multi-account-core account-manager initialize L137-143).
         if (credential.refresh) {
+          // (pool write follows)
           const metadata: AccountMetadataPatch = {
             accountId: tokens.account?.uuid,
             accountUuid: tokens.account?.uuid,
@@ -121,6 +123,19 @@ export function createAuthorize(deps: AuthorizeDeps = {}): () => Promise<Integra
           const store = new AccountStore();
           const manager = await AccountManager.create(store, emptyAuth, client);
           await manager.addAccount(credential, tokens.account?.email_address, metadata);
+        } else {
+          // FIX 7 (#2870): no-silent-failure - name the condition and the consequence.
+          await client.app
+            .log({
+              body: {
+                service: ANTHROPIC_OAUTH_ADAPTER.serviceLogName,
+                level: "warn",
+                message:
+                  "Token exchange returned no refresh_token; the account was NOT added to the pool and cannot be rotated. Re-run the login with an approved client.",
+                extra: { accountId: tokens.account?.uuid ?? "unmapped" },
+              },
+            })
+            .catch(() => {});
         }
 
         return credential;

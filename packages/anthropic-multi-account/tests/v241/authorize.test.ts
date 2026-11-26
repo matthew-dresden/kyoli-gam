@@ -388,3 +388,43 @@ describe("v241 refresh - accountId is never a credential value (FIX 1, MAJOR #28
     }
   });
 });
+
+describe("v241 authorize - no-refresh-token exchange is logged (FIX 7, #2870)", () => {
+  test("a refresh_token-less exchange emits a warn naming condition and consequence", async () => {
+    const { createAuthorize } = await import("../../src/v241/authorize");
+    const { createMockClient } = await import("../helpers");
+    const client = createMockClient();
+    const exchangeCode = async () => ({
+      access_token: "at-fixture",
+      // no refresh_token: the pool write is skipped
+      expires_in: 3_600,
+      account: { uuid: "acct-1", email_address: "norefresh@example.com" },
+    });
+    const loadOAuthConfig = async () => ({
+      authorizeUrl: "https://claude.ai/oauth/authorize",
+      clientId: "fixture-client-id",
+      scopes: "user:profile",
+      source: "fixture" as const,
+    });
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "v241-norefresh-"));
+    const originalEnv = process.env.OPENCODE_CONFIG_DIR;
+    process.env.OPENCODE_CONFIG_DIR = dir;
+    try {
+      const authorize = createAuthorize({ exchangeCode, loadOAuthConfig, client } as never);
+      const authorization = await authorize();
+      await (authorization as { callback: (code: string) => Promise<unknown> }).callback("norefresh-code");
+      expect(client.logs.length).toBeGreaterThanOrEqual(1);
+      const line = JSON.stringify(client.logs[0]);
+      expect(client.logs[0]?.level).toBe("warn");
+      expect(line).toContain("refresh");
+      expect(line.toLowerCase()).toContain("pool");
+    } finally {
+      if (originalEnv === undefined) delete process.env.OPENCODE_CONFIG_DIR;
+      else process.env.OPENCODE_CONFIG_DIR = originalEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
