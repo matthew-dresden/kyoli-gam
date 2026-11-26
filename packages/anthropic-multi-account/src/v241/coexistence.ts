@@ -51,12 +51,13 @@ export function createCoexistenceCheck(deps: CoexistenceDeps): () => Promise<voi
   };
 }
 
-/** Best-effort default enumeration over the host's promise context integration domain. */
-export function defaultListIntegrations(ctx: {
-  integration: { list?: (...args: unknown[]) => Promise<unknown> };
-}): () => Promise<ReadonlyArray<IntegrationSnapshot>> {
+/** Best-effort default enumeration over the host's promise context integration domain.
+ * The declared PluginContext subset only types `transform`; the runtime object carries the
+ * full client API (list included) - hence the defensive cast + optional call. */
+export function defaultListIntegrations(ctx: { integration: unknown }): () => Promise<ReadonlyArray<IntegrationSnapshot>> {
   return async () => {
-    const raw = await ctx.integration.list?.();
+    const domain = ctx.integration as { list?: (...args: unknown[]) => Promise<unknown> };
+    const raw = await domain.list?.();
     const items = Array.isArray(raw) ? raw : [];
     return items.map((item) => {
       const record = item as { id?: string; connections?: unknown };
