@@ -1,3 +1,5 @@
+import { createAuthorize, createRefresh } from "./authorize";
+import { registerIntegrationMethod } from "./integration-registration";
 import type { PluginContext } from "./types";
 
 if (process.env.CLAUDE_MULTI_ACCOUNT_TRACE_PLUGIN === "1") {
@@ -15,10 +17,15 @@ if (process.env.CLAUDE_MULTI_ACCOUNT_TRACE_PLUGIN === "1") {
  */
 export const v241Definition = {
   id: "anthropic-multi-account",
-  setup: async (_ctx: PluginContext): Promise<void> => {
-    // Wiring is added by the v241 units: integration method registration
-    // (integration-registration.ts), request seam (request-seam.ts) and pool
-    // seeding (seed.ts).
+  setup: async (ctx: PluginContext): Promise<void> => {
+    // OAuth connect method on the "anthropic" integration, backed by the fork's
+    // existing PKCE/exchange/refresh machinery (authorize.ts).
+    await registerIntegrationMethod(ctx, {
+      authorize: createAuthorize(),
+      refresh: createRefresh(),
+    });
+
+    // Request seam and pool seeding are wired by the request-seam.ts / seed.ts units.
   },
 };
 
