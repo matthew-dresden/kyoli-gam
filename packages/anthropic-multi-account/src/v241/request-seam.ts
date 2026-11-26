@@ -71,6 +71,9 @@ export function createModelRequestHandler(
     const token = await deps.getActiveAccessToken();
     if (!token) return;
 
+    // FIX 6 (#2870): symmetric with the x-api-key removal - a case-variant base
+    // Authorization would otherwise survive alongside the injected Bearer.
+    deleteHeaderCaseInsensitive(event.headers, "authorization");
     event.headers.authorization = `Bearer ${token}`;
     // Bearer and API-key auth must never travel together on the same request.
     deleteHeaderCaseInsensitive(event.headers, "x-api-key");

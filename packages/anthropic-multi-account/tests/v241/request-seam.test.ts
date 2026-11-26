@@ -276,3 +276,21 @@ describe("createPoolAccessors - auth-disabled pool (FIX 3, #2870)", () => {
     }
   });
 });
+
+describe("model.request - case-variant authorization replacement (FIX 6, #2870)", () => {
+  test("an uppercase base Authorization is replaced, not duplicated", async () => {
+    const { createModelRequestHandler } = await import("../../src/v241/request-seam");
+    const handler = createModelRequestHandler({
+      getActiveAccessToken: async () => "fixture-access-token",
+      buildHeaders: () => ({ "anthropic-beta": "oauth-2025-04-20" }),
+    });
+    const headers: Record<string, string> = {
+      Authorization: "Bearer base-token",
+      "User-Agent": "base-agent",
+    };
+    await handler({ headers } as never);
+    const keys = Object.keys(headers);
+    expect(keys.filter((k) => k.toLowerCase() === "authorization")).toEqual(["authorization"]);
+    expect(headers.authorization).toBe("Bearer fixture-access-token");
+  });
+});
