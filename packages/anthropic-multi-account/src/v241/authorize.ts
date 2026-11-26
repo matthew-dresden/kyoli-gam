@@ -155,7 +155,10 @@ export function createRefresh(deps: RefreshDeps = {}): (credential: CredentialOA
 
     const result = await refreshTokenFn(credential.refresh, accountId, client);
     if (!result.ok) {
-      throw new Error(`Token refresh failed${result.permanent ? " (permanent)" : ""}`);
+      // P2 #2870: carry the classified status so the host's drained error is provable.
+      throw new Error(
+        `Token refresh failed (status=${result.status ?? "unknown"}; class=${result.permanent ? "permanent" : "transient"}): ${result.message ?? "no detail"}`,
+      );
     }
 
     const patch = result.patch;

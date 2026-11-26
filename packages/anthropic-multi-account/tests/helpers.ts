@@ -25,8 +25,8 @@ export async function setupTestEnv(): Promise<{ dir: string; cleanup: () => Prom
   };
 }
 
-export function createMockClient(): PluginClient & { logs: Array<{ service: string; level: string; message: string }> } {
-  const logs: Array<{ service: string; level: string; message: string }> = [];
+export function createMockClient(): PluginClient & { logs: Array<{ service: string; level: string; message: string; extra?: Record<string, unknown> }> } {
+  const logs: Array<{ service: string; level: string; message: string; extra?: Record<string, unknown> }> = [];
 
   return {
     logs,
@@ -38,7 +38,7 @@ export function createMockClient(): PluginClient & { logs: Array<{ service: stri
     },
     app: {
       log: async (params) => {
-        logs.push({ service: params.body.service, level: params.body.level, message: params.body.message });
+        logs.push({ service: params.body.service, level: params.body.level, message: params.body.message, extra: params.body.extra });
       },
     },
   };

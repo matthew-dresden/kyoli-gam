@@ -41,6 +41,11 @@ export async function refreshToken(
       const message = error instanceof Error ? error.message : String(error);
       const isPermanent = PERMANENT_FAILURE_MESSAGE_PATTERNS
         .some((pattern) => pattern.test(message));
+      // P2 #2870: surface the refusal class with its endpoint and HTTP status so
+      // transient-vs-permanent is provable. Structured single line; never a token value.
+      const endpointMatch = /url=([^;]+);/.exec(message);
+      const statusMatch = /status=(\d{3})/.exec(message);
+      const classification = isPermanent ? "permanent" : "transient";
 
       await client.app
         .log({
@@ -48,12 +53,17 @@ export async function refreshToken(
             service: ANTHROPIC_OAUTH_ADAPTER.serviceLogName,
             level: isPermanent ? "error" : "warn",
             message: `Token refresh failed: ${message}${isPermanent ? " (permanent)" : ""}`,
-            extra: { accountId },
+            extra: {
+              accountId,
+              endpoint: endpointMatch?.[1],
+              status: statusMatch?.[1] ? Number(statusMatch[1]) : undefined,
+              classification,
+            },
           },
         })
         .catch(() => {});
 
-      return { ok: false, permanent: isPermanent };
+      return { ok: false, permanent: isPermanent, message, status: statusMatch?.[1] ? Number(statusMatch[1]) : undefined };
     } finally {
       refreshMutexByAccountId.delete(accountId);
     }

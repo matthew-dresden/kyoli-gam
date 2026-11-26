@@ -122,7 +122,14 @@ export interface OriginalAuthHook {
 
 export type TokenRefreshResult =
   | { ok: true; patch: CredentialRefreshPatch }
-  | { ok: false; permanent: boolean };
+  | {
+      ok: false;
+      permanent: boolean;
+      /** The classified inner message (includes endpoint + HTTP status). Never contains credential values. */
+      message?: string;
+      /** HTTP status parsed from the token-endpoint refusal, when present. */
+      status?: number;
+    };
 
 export interface ManagedAccount {
   index: number;

@@ -120,7 +120,7 @@ describe("token", () => {
 
         const result = await refreshToken("old-refresh", `account-${status}`, client);
 
-        expect(result).toEqual({ ok: false, permanent: false });
+        expect(result).toMatchObject({ ok: false, permanent: false });
         expect(client.logs.length).toBe(1);
         expect(client.logs[0]?.service).toBe(ANTHROPIC_OAUTH_ADAPTER.serviceLogName);
         expect(client.logs[0]?.level).toBe("warn");
@@ -138,7 +138,7 @@ describe("token", () => {
 
         const result = await refreshToken("old-refresh", `account-${status}`, client);
 
-        expect(result).toEqual({ ok: false, permanent: false });
+        expect(result).toMatchObject({ ok: false, permanent: false });
         expect(client.logs.length).toBe(1);
         expect(client.logs[0]?.service).toBe(ANTHROPIC_OAUTH_ADAPTER.serviceLogName);
         expect(client.logs[0]?.level).toBe("warn");
@@ -152,7 +152,7 @@ describe("token", () => {
 
       const result = await refreshToken("old-refresh", "account-network-error", client);
 
-      expect(result).toEqual({ ok: false, permanent: false });
+      expect(result).toMatchObject({ ok: false, permanent: false });
       expect(client.logs.length).toBe(1);
       expect(client.logs[0]?.level).toBe("warn");
       expect(client.logs[0]?.message).toContain("network error");
@@ -172,7 +172,7 @@ describe("token", () => {
 
         const result = await refreshToken("old-refresh", `account-auth-invalid-${index}`, client);
 
-        expect(result).toEqual({ ok: false, permanent: true });
+        expect(result).toMatchObject({ ok: false, permanent: true });
         expect(client.logs.length).toBe(1);
         expect(client.logs[0]?.service).toBe(ANTHROPIC_OAUTH_ADAPTER.serviceLogName);
         expect(client.logs[0]?.level).toBe("error");
@@ -362,5 +362,58 @@ describe("token", () => {
       expect(resultB1.patch.accessToken).toBe("token-b-1");
       expect(resultB2.patch.accessToken).toBe("token-b-2");
     });
+  });
+});
+
+describe("token - classified refusals (P2 #2870)", () => {
+  let refreshWithOAuthSpy: ReturnType<typeof vi.spyOn<typeof anthropicOAuth, "refreshWithOAuth">>;
+  const ENDPOINT = "https://platform.claude.com/v1/oauth/token";
+
+  beforeEach(() => {
+    refreshWithOAuthSpy = vi.spyOn(anthropicOAuth, "refreshWithOAuth");
+  });
+  afterEach(() => {
+    refreshWithOAuthSpy.mockRestore();
+    clearRefreshMutex();
+  });
+
+  test("transient 429 refusal logs endpoint, status, and class (no token values)", async () => {
+    refreshWithOAuthSpy.mockRejectedValue(
+      new Error(`Anthropic token request failed. url=${ENDPOINT}; details=Error: HTTP request failed. status=429; url=${ENDPOINT}; body={"type":"error","error":{"type":"rate_limit_error"}}`),
+    );
+    const client = createMockClient();
+    const result = await refreshToken("refresh-token-abc", "account-1", client);
+    expect(result.ok).toBe(false);
+    expect(result.permanent).toBe(false);
+    expect(client.logs.length).toBe(1);
+    expect(client.logs[0]?.message).toContain("status=429");
+    expect(client.logs[0]?.message).toContain(ENDPOINT);
+    expect(client.logs[0]?.extra).toMatchObject({ endpoint: ENDPOINT, status: 429, classification: "transient" });
+    expect(JSON.stringify(client.logs[0])).not.toContain("refresh-token-abc");
+  });
+
+  test("permanent invalid_grant refusal logs status 400 and class permanent", async () => {
+    refreshWithOAuthSpy.mockRejectedValue(
+      new Error(`Anthropic token request failed. url=${ENDPOINT}; details=Error: HTTP request failed. status=400; url=${ENDPOINT}; body={"error":"invalid_grant"}`),
+    );
+    const client = createMockClient();
+    const result = await refreshToken("refresh-token-abc", "account-2", client);
+    expect(result.ok).toBe(false);
+    expect(result.permanent).toBe(true);
+    expect(client.logs.length).toBe(1);
+    const line = JSON.stringify(client.logs[0]);
+    expect(line).toContain("status=400");
+    expect(line).toContain("permanent");
+    expect(line).not.toContain("refresh-token-abc");
+  });
+
+  test("result carries the classified message and status for the caller", async () => {
+    refreshWithOAuthSpy.mockRejectedValue(
+      new Error(`Anthropic token request failed. url=${ENDPOINT}; details=Error: HTTP request failed. status=429; url=${ENDPOINT}; body={}`),
+    );
+    const client = createMockClient();
+    const result = await refreshToken("refresh-token-abc", "account-3", client);
+    expect(result.message).toContain("status=429");
+    expect(result.status).toBe(429);
   });
 });
