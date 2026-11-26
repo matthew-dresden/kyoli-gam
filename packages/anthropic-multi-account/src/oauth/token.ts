@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   ANTHROPIC_OAUTH_ADAPTER,
   TOKEN_EXPIRY_BUFFER_MS,
@@ -30,7 +31,15 @@ export async function refreshToken(
 ): Promise<TokenRefreshResult> {
   if (!currentRefreshToken) return { ok: false, permanent: true };
 
-  const inFlightRefresh = refreshMutexByAccountId.get(accountId);
+  // P4 #2870: the "unmapped" sentinel (pool-miss) must not become a shared mutex key -
+  // two concurrent refreshes of DIFFERENT credentials would otherwise receive each
+  // other's patch. Key unmapped entries by a token hash (privacy-preserving) so
+  // identical tokens still deduplicate while distinct credentials stay independent.
+  const mutexKey =
+    accountId === "unmapped"
+      ? `unmapped:${createHash("sha256").update(currentRefreshToken).digest("hex").slice(0, 16)}`
+      : accountId;
+  const inFlightRefresh = refreshMutexByAccountId.get(mutexKey);
   if (inFlightRefresh) return inFlightRefresh;
 
   const refreshPromise = (async (): Promise<TokenRefreshResult> => {
@@ -65,11 +74,11 @@ export async function refreshToken(
 
       return { ok: false, permanent: isPermanent, message, status: statusMatch?.[1] ? Number(statusMatch[1]) : undefined };
     } finally {
-      refreshMutexByAccountId.delete(accountId);
+      refreshMutexByAccountId.delete(mutexKey);
     }
   })();
 
-  refreshMutexByAccountId.set(accountId, refreshPromise);
+  refreshMutexByAccountId.set(mutexKey, refreshPromise);
   return refreshPromise;
 }
 

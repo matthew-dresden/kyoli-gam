@@ -417,3 +417,26 @@ describe("token - classified refusals (P2 #2870)", () => {
     expect(result.status).toBe(429);
   });
 });
+
+describe("token - unmapped accountId mutex isolation (P4 #2870)", () => {
+  test("concurrent unmapped refreshes of DIFFERENT credentials do not share a result", async () => {
+    const client = createMockClient();
+    const deferredA = createDeferred<CredentialRefreshPatch>();
+    const deferredB = createDeferred<CredentialRefreshPatch>();
+    let calls = 0;
+    refreshWithOAuthSpy.mockImplementation(() => {
+      calls += 1;
+      return calls === 1 ? deferredA.promise : deferredB.promise;
+    });
+
+    const callA = refreshToken("rt-credential-A-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "unmapped", client);
+    const callB = refreshToken("rt-credential-B-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "unmapped", client);
+    deferredA.resolve({ accessToken: "access-A", expiresAt: Date.now() + 3_600_000 });
+    deferredB.resolve({ accessToken: "access-B", expiresAt: Date.now() + 3_600_000 });
+
+    const [resultA, resultB] = await Promise.all([callA, callB]);
+    expect(refreshWithOAuthSpy).toHaveBeenCalledTimes(2);
+    expect(resultA.ok && resultA.patch.accessToken).toBe("access-A");
+    expect(resultB.ok && resultB.patch.accessToken).toBe("access-B");
+  });
+});
